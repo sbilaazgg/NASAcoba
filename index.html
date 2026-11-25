@@ -301,8 +301,6 @@
         table.dataTable.no-footer {
             border-bottom: 1px solid rgba(30, 41, 59, 0.8) !important;
         }
-        /* Tombol/tautan ke archive.html disembunyikan kalau belum login (class logged-in dipasang di window.onload) */
-        body:not(.logged-in) a[href^="./archive.html"] { display: none !important; }
     </style>
 </head>
 <body class="min-h-screen relative selection:bg-cyan-500 selection:text-black">
@@ -1489,7 +1487,6 @@
             try { activeOperator = JSON.parse(localStorage.getItem('astronet_active_operator_v1') || 'null'); } catch (e) {}
             const opBadge = document.getElementById('operatorBadge');
             const authLink = document.getElementById('authActionLink');
-            if (activeOperator && activeOperator.email) document.body.classList.add('logged-in');
             if (activeOperator && opBadge) opBadge.textContent = `OP: ${activeOperator.name}`;
             if (activeOperator && authLink) {
                 authLink.textContent = 'LOGOUT';
