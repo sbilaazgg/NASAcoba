@@ -192,7 +192,7 @@ $('form').onsubmit = e => {
     observation_date: $('f_date').value, analysis_notes: $('f_notes').value.trim(),
   };
   const i = rows.findIndex(r => r.id === rec.id);
-  if (i >= 0) rows[i] = { ...rows[i], ...rec }; else rows.push({ ...rec, created: Date.now() });
+  if (i >= 0) rows[i] = { ...rows[i], ...rec }; else rows.push({ ...rec, created: Date.now(), operator: currentOperator() });
   if (save()) { hide('formModal'); render(); toast('Arsip berhasil disimpan!'); }
 };
 
@@ -208,13 +208,114 @@ function exportExcel() {
   const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Arsip NEO');
   XLSX.writeFile(wb, 'arsip-observasi-neo-' + today() + '.xlsx');
 }
+// Laporan PDF: tampilannya mengikuti template laporan resmi (kop, kotak ringkasan, tabel header gelap, badge status, footer).
+function currentOperator() {
+  try { return (JSON.parse(localStorage.getItem('astronet_active_operator_v1') || 'null') || {}).name || 'Operator'; }
+  catch (e) { return 'Operator'; }
+}
+function wibNow() {
+  const p = {};
+  new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+    .formatToParts(new Date()).forEach(x => { p[x.type] = x.value; });
+  return `${p.day} ${p.month} ${p.year}, ${p.hour}:${p.minute} WIB`;
+}
 function exportPdf() {
   if (!rows.length) return toast('Arsip masih kosong.', true);
   const doc = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
-  doc.setFontSize(14); doc.text('LAPORAN ARSIP OBSERVASI NEO - ASTRONET', 40, 40);
-  doc.setFontSize(9); doc.text('Dicetak: ' + new Date().toLocaleString('id-ID'), 40, 56);
-  doc.autoTable({ startY: 70, head: [HEAD], body: bodyRows(), styles: { fontSize: 8, cellPadding: 4 },
-    headStyles: { fillColor: [31, 58, 95] }, columnStyles: { 9: { cellWidth: 190 } } });
+  const M = 30, PAD = 5;                                  // margin halaman & padding sel (pt)
+  const CW = doc.internal.pageSize.getWidth() - M * 2;    // lebar area isi
+  const list = sorted(), printedBy = currentOperator(), printedAt = wibNow();
+  const hazardCount = list.filter(r => r.is_hazardous).length;
+  const num = v => Number(v).toLocaleString('en-US');    // 2,500 / 19,800,000 seperti di template
+
+  // warna (sama dengan template: slate + biru langit + merah)
+  const C = { ink: [15, 23, 42], text: [30, 41, 59], sub: [71, 85, 105], mute: [100, 116, 139], faint: [148, 163, 184],
+    line: [203, 213, 225], box: [241, 245, 249], zebra: [248, 250, 252], sky: [2, 132, 199],
+    redBg: [254, 226, 226], redTx: [185, 28, 28], skyBg: [224, 242, 254], skyTx: [3, 105, 161] };
+
+  // 1) Kop laporan: judul, subjudul, garis biru
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.setTextColor(...C.ink);
+  doc.text('ASTRONET // NEO RADAR CONTROL CENTER', M, M + 14);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...C.sub);
+  doc.text('Laporan Resmi Arsip Observasi & Analisis Mitigasi Near-Earth Objects', M, M + 28);
+  doc.setDrawColor(...C.sky); doc.setLineWidth(1.5); doc.line(M, M + 36, M + CW, M + 36);
+
+  // 2) Kotak ringkasan: dicetak oleh, tanggal cetak, total objek, objek berbahaya (label tebal, isi biasa)
+  const boxY = M + 46, boxH = 22;
+  doc.setFillColor(...C.box); doc.setDrawColor(...C.line); doc.setLineWidth(0.5);
+  doc.rect(M, boxY, CW, boxH, 'FD');
+  const meta = [['Dicetak Oleh:', printedBy], ['Tanggal Cetak:', printedAt],
+    ['Total Objek Diarsipkan:', list.length + ' Asteroid'], ['Objek Berbahaya:', hazardCount + ' Asteroid']];
+  doc.setFontSize(8); doc.setTextColor(...C.text);
+  let mx = M + 10;
+  meta.forEach(([label, val], i) => {
+    if (i) { doc.setFont('helvetica', 'normal'); doc.text('  |  ', mx, boxY + 14); mx += doc.getTextWidth('  |  '); }
+    doc.setFont('helvetica', 'bold'); doc.text(label, mx, boxY + 14); mx += doc.getTextWidth(label);
+    doc.setFont('helvetica', 'normal'); doc.text(' ' + val, mx, boxY + 14); mx += doc.getTextWidth(' ' + val);
+  });
+
+  // 3) Tabel. Lebar kolom (%): No 4, Asteroid 17, Citra 12, Tgl 11, Parameter 18, Status 12, Catatan 38
+  const colW = [4, 17, 12, 11, 18, 12, 38].map(w => CW * w / 100);
+  const nameLines = r => { doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5); return doc.splitTextToSize(String(r.name || '-'), colW[1] - PAD * 2); };
+  const asteroidH = r => PAD * 2 + 29 + (nameLines(r).length - 1) * 10.5;  // tinggi kolom Asteroid (nama bisa 2 baris)
+  const statusH = PAD * 2 + 30;                                            // badge + baris prioritas
+
+  doc.autoTable({
+    startY: boxY + boxH + 14,
+    margin: { top: M, left: M, right: M, bottom: 40 },
+    tableWidth: CW,
+    theme: 'grid',
+    rowPageBreak: 'avoid',
+    head: [['NO', 'ASTEROID & JPL ID', 'CITRA', 'TGL OBSERVASI', 'PARAMETER ORBIT', 'STATUS & PRIORITAS', 'CATATAN ANALISIS']],
+    body: list.map((r, i) => [
+      String(i + 1),
+      { content: '', styles: { minCellHeight: asteroidH(r) } },   // diisi manual di didDrawCell
+      { content: '-', styles: { halign: 'center', textColor: C.faint, fontSize: 7 } },
+      fd(r.observation_date),
+      `Diameter: ${num(r.diameter_m)} m\nJarak: ${num(r.distance_km)} km\nKecepatan: ${num(r.velocity_kmh)} km/h`,
+      { content: '', styles: { minCellHeight: statusH } },        // diisi manual di didDrawCell
+      r.analysis_notes ? r.analysis_notes : { content: 'Tidak ada catatan analisis.', styles: { fontStyle: 'italic' } },
+    ]),
+    styles: { font: 'helvetica', fontSize: 8, cellPadding: PAD, textColor: C.text, lineColor: C.line, lineWidth: 0.5, valign: 'top', overflow: 'linebreak' },
+    headStyles: { fillColor: C.ink, textColor: [248, 250, 252], fontStyle: 'bold', fontSize: 7.5, lineColor: C.ink, valign: 'middle' },
+    alternateRowStyles: { fillColor: C.zebra },
+    columnStyles: Object.fromEntries(colW.map((w, i) => [i, { cellWidth: w }])),
+    didDrawCell: d => {
+      if (d.section !== 'body') return;
+      const r = list[d.row.index]; if (!r) return;
+      const x = d.cell.x + PAD, y = d.cell.y + PAD;
+
+      if (d.column.index === 1) {            // nama tebal, lalu "JPL: ..." dan "Op: ..." abu-abu kecil
+        const lines = nameLines(r);
+        doc.setTextColor(...C.text);
+        lines.forEach((ln, k) => doc.text(ln, x, y + 7 + k * 10.5));
+        let by = y + 7 + (lines.length - 1) * 10.5;
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(...C.mute);
+        doc.text('JPL: ' + (r.jpl_id || '-'), x, by += 10);
+        doc.text('Op: ' + (r.operator || printedBy), x, by + 9);
+      }
+
+      if (d.column.index === 5) {            // badge HAZARDOUS (merah) / SAFE (biru) + Prioritas
+        const hz = !!r.is_hazardous, label = hz ? 'HAZARDOUS' : 'SAFE';
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(7);
+        doc.setFillColor(...(hz ? C.redBg : C.skyBg));
+        doc.roundedRect(x, y, doc.getTextWidth(label) + 10, 11, 2, 2, 'F');
+        doc.setTextColor(...(hz ? C.redTx : C.skyTx));
+        doc.text(label, x + 5, y + 8);
+        doc.setFontSize(8); doc.setTextColor(...C.text);
+        doc.text('Prioritas:', x, y + 27);
+        doc.setFont('helvetica', 'normal');
+        doc.text(String(r.priority_level || 'NORMAL'), x + doc.getTextWidth('Prioritas: ') + 2, y + 27);
+      }
+    },
+  });
+
+  // 4) Footer di bawah tabel, rata kanan
+  let fy = doc.lastAutoTable.finalY + 18;
+  if (fy > doc.internal.pageSize.getHeight() - 20) { doc.addPage(); fy = M + 10; }
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(...C.mute);
+  doc.text('Dokumen dihasilkan otomatis oleh sistem ASTRONET NEO Radar \u2022 ' + printedAt, M + CW, fy, { align: 'right' });
+
   doc.save('laporan-observasi-neo-' + today() + '.pdf');
 }
 function downloadTemplate() {
